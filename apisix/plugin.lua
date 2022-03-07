@@ -480,7 +480,7 @@ local function merge_service_route(service_conf, route_conf)
         new_conf.has_domain = route_conf.has_domain
     end
 
-    -- 挪一下upstream id 注意 如果有upstream则这里已经无了
+    -- 挪一下upstream id 注意
     if route_conf.value.upstream_id then
         new_conf.value.upstream_id = route_conf.value.upstream_id
         new_conf.has_domain = route_conf.has_domain

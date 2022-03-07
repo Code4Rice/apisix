@@ -397,7 +397,8 @@ function _M.http_access_phase()
     -- apisix的概念，再ngx ctx上再维护了一个ctx，插件使用的ctx也是这个api_ctx
     ngx_ctx.api_ctx = api_ctx
 
-    -- TODO
+    -- 设置基础变量
+	-- 包含对url变量、header、post变量的获取
     core.ctx.set_vars_meta(api_ctx)
 
     -- 如果开启debug模式，则打标记
