@@ -242,7 +242,8 @@ local function plugins_eq(old, new)
     return core.table.set_eq(old_set, new_set)
 end
 
-
+-- TODO 目的是啥？
+-- 同步当前配置文件和etcd内插件配置
 local function sync_local_conf_to_etcd(reset)
     local local_conf = core.config.local_conf()
 
@@ -261,6 +262,7 @@ local function sync_local_conf_to_etcd(reset)
     end
 
     if reset then
+        -- 读取etcd中插件配置
         local res, err = core.etcd.get("/plugins")
         if not res then
             core.log.error("failed to get current plugins: ", err)
@@ -277,6 +279,7 @@ local function sync_local_conf_to_etcd(reset)
             return
         end
 
+        -- 读取回包
         local stored_plugins = res.body.node.value
         local revision = res.body.node.modifiedIndex
         if plugins_eq(stored_plugins, plugins) then
@@ -286,6 +289,7 @@ local function sync_local_conf_to_etcd(reset)
 
         core.log.warn("sync local conf to etcd")
 
+        -- 同步一下配置文件的和etcd中插件的配置
         local res, err = core.etcd.atomic_set("/plugins", plugins, nil, revision)
         if not res then
             core.log.error("failed to set plugins: ", err)
@@ -297,6 +301,7 @@ local function sync_local_conf_to_etcd(reset)
     core.log.warn("sync local conf to etcd")
 
     -- need to store all plugins name into one key so that it can be updated atomically
+    -- 更新etcd配置
     local res, err = core.etcd.set("/plugins", plugins)
     if not res then
         core.log.error("failed to set plugins: ", err)
@@ -309,6 +314,7 @@ local function reload_plugins(data, event, source, pid)
     plugin.load()
 
     if ngx_worker_id() == 0 then
+        -- 重新同步配置
         sync_local_conf_to_etcd()
     end
 end
@@ -334,16 +340,23 @@ local uri_route = {
 
 
 function _M.init_worker()
+    -- 读取配置文件
     local local_conf = core.config.local_conf()
     if not local_conf.apisix or not local_conf.apisix.enable_admin then
         return
     end
 
+    -- 类似nginx的路由匹配的功能
     router = route.new(uri_route)
     events = require("resty.worker.events")
 
+    -- 注册重载插件的事件
+    -- 因为重载需所有worker都重载，所以这里要通过事件让所有worker都触发重载
+    -- 当前worker也会触发
     events.register(reload_plugins, reload_event, "PUT")
 
+    -- 获取worker id号
+    -- 0就是第一个worker进程
     if ngx_worker_id() == 0 then
         local ok, err = ngx_timer_at(0, function(premature)
             if premature then
@@ -351,6 +364,7 @@ function _M.init_worker()
             end
 
             -- try to reset the /plugins to the current configuration in the admin
+            -- 同步当前配置文件etcd中插件配置
             sync_local_conf_to_etcd(true)
         end)
 

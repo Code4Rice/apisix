@@ -158,7 +158,7 @@ nginx_config:                     # config for render the template to generate n
   #user: root                     # specifies the execution user of the worker process.
                                   # the "user" directive makes sense only if the master process runs with super-user privileges.
                                   # if you're not root user,the default is current user.
-  error_log: logs/error.log
+  error_log: log/error.log
   error_log_level:  warn          # warn,error
   worker_processes: auto          # if you want use multiple cores in container, you can inject the number of cpu as environment variable "APISIX_WORKER_PROCESSES"
   enable_cpu_affinity: true       # enable cpu affinity, this is just work well only on physical machine
@@ -211,7 +211,7 @@ nginx_config:                     # config for render the template to generate n
 
   http:
     enable_access_log: true         # enable access log or not, default true
-    access_log: logs/access.log
+    access_log: log/access.log
     access_log_format: "$remote_addr - $remote_user [$time_local] $http_host \"$request\" $status $body_bytes_sent $request_time \"$http_referer\" \"$http_user_agent\" $upstream_addr $upstream_status $upstream_response_time \"$upstream_scheme://$upstream_host$upstream_uri\""
     access_log_format_escape: default       # allows setting json or default characters escaping in variables
     keepalive_timeout: 60s          # timeout during which a keep-alive client connection will stay open on the server side.

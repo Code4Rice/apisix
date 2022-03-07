@@ -34,6 +34,8 @@ function _M.match(api_ctx)
     if not cached_router_version or cached_router_version ~= user_routes.conf_version
         or not cached_service_version or cached_service_version ~= service_version
     then
+        -- 懒加载
+        -- 且如果有版本更新的话就重新创建radixtree uri
         uri_router = base_router.create_radixtree_uri_router(user_routes.values,
                                                              uri_routes, false)
         cached_router_version = user_routes.conf_version
@@ -45,6 +47,7 @@ function _M.match(api_ctx)
         return true
     end
 
+    -- 路由匹配
     return base_router.match_uri(uri_router, match_opts, api_ctx)
 end
 

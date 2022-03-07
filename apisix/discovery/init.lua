@@ -25,12 +25,14 @@ local discovery = {}
 if discovery_type then
     for discovery_name, _ in pairs(discovery_type) do
         log.info("use discovery: ", discovery_name)
+        -- 载入服务发现列表
         discovery[discovery_name] = require("apisix.discovery." .. discovery_name)
     end
 end
 
 function discovery.init_worker()
     if discovery_type then
+        -- 批量初始化
         for discovery_name, _ in pairs(discovery_type) do
             discovery[discovery_name].init_worker()
         end

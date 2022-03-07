@@ -35,9 +35,11 @@ local function background_timer()
     end
 
     local threads = {}
+    -- 批量唤醒后台任务
     for name, timer in pairs(timers) do
         core.log.info("run timer[", name, "]")
 
+        -- 生成且运行新协程任务
         local th, err = thread_spawn(timer)
         if not th then
             core.log.error("failed to spawn thread for timer [", name, "]: ", err)
@@ -49,6 +51,7 @@ local function background_timer()
 ::continue::
     end
 
+    -- 等待全部成功唤醒的协程完成任务
     local ok, err = thread_wait(unpack(threads))
     if not ok then
         core.log.error("failed to wait threads: ", err)
@@ -67,6 +70,7 @@ function _M.init_worker()
         sleep_succ = 0,
         check_interval = check_interval,
     }
+    -- 一个ngx的定时器，可以完成多个后台定时任务
     local timer, err = core.timer.new("background", background_timer, opts)
     if not timer then
         core.log.error("failed to create background timer: ", err)
@@ -78,6 +82,7 @@ end
 
 
 function _M.register_timer(name, f, privileged)
+    --仅特权进程才可以运行特权任务
     if privileged and not is_privileged() then
         return
     end

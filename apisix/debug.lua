@@ -122,6 +122,7 @@ local function apple_new_fun(module, fun_name, file_path, hook_conf)
     local t = {fun_org = fun_org}
     local mt = {}
 
+    -- 注册元表函数call 在call之前之后打印调试信息
     function mt.__call(self, ...)
         local arg = {...}
         local http_filter = debug_yaml.http_filter
@@ -243,6 +244,7 @@ end
 
 
 function _M.init_worker()
+    -- 仅worker节点
     local process = require("ngx.process")
     if process.type() ~= "worker" then
         return

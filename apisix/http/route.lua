@@ -35,6 +35,7 @@ function _M.create_radixtree_uri_router(routes, uri_routes, with_parameter)
 
     core.table.clear(uri_routes)
 
+    -- 遍历从etcd读取的数据
     for _, route in ipairs(routes) do
         if type(route) == "table" then
             local status = core.table.try_read_attr(route, "value", "status")
@@ -44,7 +45,10 @@ function _M.create_radixtree_uri_router(routes, uri_routes, with_parameter)
             end
 
             local filter_fun, err
+            -- 这里就是配置在route的filter脚本
+            -- 可以脚本的方式决定是否命中
             if route.value.filter_func then
+                -- loadstring 第二个参数用于报错时候的脚本描述（脚本名称）
                 filter_fun, err = loadstring(
                                         "return " .. route.value.filter_func,
                                         "router#" .. route.value.id)
@@ -53,11 +57,13 @@ function _M.create_radixtree_uri_router(routes, uri_routes, with_parameter)
                                    " route id: ", route.value.id)
                     goto CONTINUE
                 end
-
+                -- 得到这个函数
                 filter_fun = filter_fun()
             end
 
+            -- hosts数组优先
             local hosts = route.value.hosts or route.value.host
+            -- 当没有hosts且有service id时候 按照service的host为准
             if not hosts and route.value.service_id then
                 local service = service_fetch(route.value.service_id)
                 if not service then
@@ -80,8 +86,10 @@ function _M.create_radixtree_uri_router(routes, uri_routes, with_parameter)
                                or route.value.remote_addr,
                 vars = route.value.vars,
                 filter_fun = filter_fun,
+                -- dispatch(匹配到)的时候会调用handler
                 handler = function (api_ctx, match_opts)
                     api_ctx.matched_params = nil
+                    -- 将当前路由信息赋值好
                     api_ctx.matched_route = route
                     api_ctx.curr_req_matched = match_opts.matched
                 end
@@ -133,6 +141,7 @@ end
 
 
 function _M.init_worker(filter)
+    -- 配置config模块的watch
     local user_routes, err = core.config.new("/routes", {
             automatic = true,
             item_schema = core.schema.route,

@@ -59,6 +59,7 @@ local _M = {
 
 
 function _M.get_seed_from_urandom()
+    -- /dev/urandom 是系统生成的随机数据，多用于各种加密、随机算法使用
     local frandom, err = open("/dev/urandom", "rb")
     if not frandom then
         return nil, 'failed to open /dev/urandom: ' .. err

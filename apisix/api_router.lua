@@ -80,11 +80,15 @@ function fetch_api_router()
     core.table.clear(routes)
 
     has_route_not_under_apisix = false
-
+    core.log.alert("fetch api router, has_route_not_under_apisix ", has_route_not_under_apisix)
     for _, plugin in ipairs(plugin_mod.plugins) do
+        -- 一些插件可以设置一个路由，让请求该路由的直接走到插件的逻辑
+        -- 判断依据就是是否有api_fun
         local api_fun = plugin.api
         if api_fun then
+            core.log.alert("fetch api router,plugin.name ", plugin.name)
             local name = plugin.name
+            -- api_routes是个数组
             local api_routes = api_fun()
             core.log.debug("fetched api routes: ",
                            core.json.delay_encode(api_routes, true))
@@ -92,11 +96,13 @@ function fetch_api_router()
                 local typ_uri = type(route.uri)
                 if not has_route_not_under_apisix then
                     if typ_uri == "string" then
+                        -- 确保没有apisix前缀
                         if not core.string.has_prefix(route.uri, "/apisix/") then
                             has_route_not_under_apisix = true
                         end
                     else
                         for _, uri in ipairs(route.uri) do
+                            -- 确保没有apisix前缀
                             if not core.string.has_prefix(uri, "/apisix/") then
                                 has_route_not_under_apisix = true
                                 break
@@ -110,8 +116,9 @@ function fetch_api_router()
                         paths = route.uri,
                         handler = function (api_ctx, skip_global_rule)
                             local code, body
-
+                            -- name: 对于插件的名称
                             local metadata = plugin_mod.plugin_metadata(name)
+                            -- interceptors 路由保护
                             if metadata and metadata.value.interceptors then
                                 for _, rule in ipairs(metadata.value.interceptors) do
                                     local f = interceptors[rule.name]
@@ -126,11 +133,14 @@ function fetch_api_router()
                                 end
                             end
 
+                            -- skip_global_rule : 不运行全局插件
+                            -- not skixxxx 运行
                             if not skip_global_rule then
                                 plugin_mod.run_global_rules(api_ctx,
                                     apisix_router.global_rules, nil)
                             end
 
+                            -- 插件的处理函数
                             code, body = route.handler(api_ctx)
                             if code or body then
                                 core.response.exit(code, body)
@@ -149,6 +159,7 @@ end -- do
 
 function _M.has_route_not_under_apisix()
     if has_route_not_under_apisix == nil then
+    core.log.alert("has_route_not_under_apisix == nil: ")
         return true
     end
 
@@ -157,6 +168,8 @@ end
 
 
 function _M.match(api_ctx, skip_global_rule)
+    core.log.alert("api_router.match")
+    -- 懒加载方式，一开始不会初始化好
     local api_router = core.lrucache.global("api_router", plugin_mod.load_times, fetch_api_router)
     if not api_router then
         core.log.error("failed to fetch valid api router")
@@ -166,7 +179,9 @@ function _M.match(api_ctx, skip_global_rule)
     core.table.clear(match_opts)
     match_opts.method = api_ctx.var.request_method
 
+    -- 匹配是否有符合插件api的路由
     local ok = api_router:dispatch(api_ctx.var.uri, match_opts, api_ctx, skip_global_rule)
+    core.log.alert("api_router.match  dispatch ", tostring(ok))
     return ok
 end
 

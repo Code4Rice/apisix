@@ -64,7 +64,9 @@ local function attach_http_router_common_methods(http_router)
     end
 
     if http_router.init_worker == nil then
+        -- 替换为apisix.http.route的init_worker watch route
         http_router.init_worker = function (filter)
+            -- 这里user_routes 是watch到的数据
             http_router.user_routes = http_route.init_worker(filter)
         end
     end
@@ -73,6 +75,7 @@ end
 
 function _M.http_init_worker()
     local conf = core.config.local_conf()
+    -- 默认的匹配模式配置
     local router_http_name = "radixtree_uri"
     local router_ssl_name = "radixtree_sni"
 
@@ -82,7 +85,9 @@ function _M.http_init_worker()
     end
 
     local router_http = require("apisix.http.router." .. router_http_name)
+    -- merge默认的匹配规则
     attach_http_router_common_methods(router_http)
+    -- 初始化函数，包括从config模块中watch路由配置
     router_http.init_worker(filter)
     _M.router_http = router_http
 
@@ -92,6 +97,7 @@ function _M.http_init_worker()
 
     _M.api = require("apisix.api_router")
 
+    -- watch 全局规则配置
     local global_rules, err = core.config.new("/global_rules", {
             automatic = true,
             item_schema = core.schema.global_rule,

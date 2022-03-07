@@ -61,6 +61,7 @@ _M.gen_uuid_v4 = uuid.generate_v4
 
 
 function _M.init()
+    -- 尝试从文件中获取apisix uid
     local uid_file_path = prefix .. "/conf/apisix.uid"
     apisix_uid = read_file(uid_file_path)
     if apisix_uid then
@@ -68,16 +69,19 @@ function _M.init()
     end
 
     --allow user to specify a meaningful id as apisix instance id
+    -- 尝试从配置文件中读取配置
     local local_conf = fetch_local_conf()
     local id = try_read_attr(local_conf, "apisix", "id")
     if id then
         apisix_uid = local_conf.apisix.id
     else
+        -- 随机生成一个id
         uuid.seed()
         apisix_uid = uuid.generate_v4()
         log.notice("not found apisix uid, generate a new one: ", apisix_uid)
     end
 
+    -- 写文件
     local ok, err = write_file(uid_file_path, apisix_uid)
     if not ok then
         log.error(err)

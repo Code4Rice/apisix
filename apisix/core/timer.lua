@@ -85,6 +85,8 @@ function _M.new(name, callback_fun, opts)
         running = false,
     }
 
+    -- 从new之后一直无限运行的定时器
+    -- 具备成功失败挂起指定时长能力
     local hdl, err = timer_every(opts.check_interval or 1,
                                  run_timer, timer)
     if not hdl then

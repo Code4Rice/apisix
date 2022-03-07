@@ -50,20 +50,26 @@ function _M.merge(route_conf, plugin_config)
         return route_conf
     end
 
+    -- 初始化一下
+    -- 一般配置了plugin config的这里的plugins字段都是空的
     if not route_conf.value.plugins then
         route_conf.value.plugins = {}
     end
 
+    -- 恢复
     if route_conf.orig_plugins then
         -- recover
         route_conf.value.plugins = route_conf.orig_plugins
     else
+        -- 第一次merge的时候备份一下当下的
         -- backup in the first time
         route_conf.orig_plugins = route_conf.value.plugins
     end
 
+    -- clone一下免得覆盖了上面备份的
     route_conf.value.plugins = core.table.clone(route_conf.value.plugins)
 
+    -- 逐一赋值，可能会旧的覆盖
     for name, value in pairs(plugin_config.value.plugins) do
         route_conf.value.plugins[name] = value
     end

@@ -603,6 +603,7 @@ http {
                 apisix.http_access_phase()
             }
 
+            # 默认长连接
             proxy_http_version 1.1;
             proxy_set_header   Host              $upstream_host;
             proxy_set_header   Upgrade           $upstream_upgrade;

@@ -34,6 +34,7 @@ function _M.load(route, api_ctx)
         error("failed to load script: " .. err .. " script: " .. script)
         return nil
     end
+    -- 写入load的函数
     api_ctx.script_obj = loadfun()
 end
 
@@ -47,7 +48,10 @@ function _M.run(phase, api_ctx)
 
     core.log.info("loaded script_obj: ", core.json.delay_encode(obj, true))
 
+    -- 要对应阶段的函数
+    -- 所以script就是个类似插件的东西
     local phase_func = obj[phase]
+    -- 运行函数
     if phase_func then
         phase_func(api_ctx)
     end

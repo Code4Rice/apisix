@@ -773,11 +773,13 @@ end
 
 
 function _M.init()
+    -- 读取本地配置文件 conf/
     local local_conf, err = config_local.local_conf()
     if not local_conf then
         return nil, err
     end
 
+    -- TODO ? 字面意思为当配置在config里的安全退出参数为true时直接返回true 不懂
     if table.try_read_attr(local_conf, "apisix", "disable_sync_configuration_during_start") then
         return true
     end
@@ -789,6 +791,7 @@ function _M.init()
 
     local etcd_conf = local_conf.etcd
     local prefix = etcd_conf.prefix
+    -- 这里主要是为了查看启动系统之前有没有执行make init去初始化etcd的目录结构
     local res, err = readdir(etcd_cli, prefix, create_formatter(prefix))
     if not res then
         return nil, err

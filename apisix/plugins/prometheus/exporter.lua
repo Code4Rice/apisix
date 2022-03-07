@@ -76,6 +76,7 @@ function _M.init()
     -- We keep the old metric names for the compatibility.
 
     -- across all services
+    -- TODO 修改为tapisix
     local metric_prefix = "apisix_"
     local attr = plugin.plugin_attr("prometheus")
     if attr and attr.metric_prefix then

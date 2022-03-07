@@ -72,6 +72,7 @@ local PLUGIN_TYPE_HTTP = 1
 local PLUGIN_TYPE_STREAM = 2
 local PLUGIN_TYPE_HTTP_WASM = 3
 local function unload_plugin(name, plugin_type)
+    -- 在当前版本不需要处理wasm插件
     if plugin_type == PLUGIN_TYPE_HTTP_WASM then
         return
     end
@@ -81,11 +82,15 @@ local function unload_plugin(name, plugin_type)
         pkg_name = "apisix.stream.plugins." .. name
     end
 
+    -- package.loaded 为当前lua程序已经加载的包
     local old_plugin = pkg_loaded[pkg_name]
+    -- 若旧插件存在于已加载模块内
+    -- 且该插件又destroy函数时，调用析构函数释放插件
     if old_plugin and type(old_plugin.destroy) == "function" then
         old_plugin.destroy()
     end
 
+    -- 清理该内存数据
     pkg_loaded[pkg_name] = nil
 end
 
@@ -109,6 +114,8 @@ local function load_plugin(name, plugins_list, plugin_type)
         core.log.error("failed to load plugin [", name, "] err: ", plugin)
         return
     end
+
+    -- 插件常规参数校验
 
     if not plugin.priority then
         core.log.error("invalid plugin [", name,
@@ -148,6 +155,7 @@ local function load_plugin(name, plugins_list, plugin_type)
     plugin.attr = plugin_attr(name)
     core.table.insert(plugins_list, plugin)
 
+    -- 初始化插件，调用init函数
     if plugin.init then
         plugin.init()
     end
@@ -155,7 +163,8 @@ local function load_plugin(name, plugins_list, plugin_type)
     return
 end
 
-
+-- 载入插件
+-- TODO 显然这里的代码写的就有问题 一开始结构没弄好 让这里的plugin name 和wasm plugin name分开了
 local function load(plugin_names, wasm_plugin_names)
     local processed = {}
     for _, name in ipairs(plugin_names) do
@@ -169,35 +178,44 @@ local function load(plugin_names, wasm_plugin_names)
         end
     end
 
+    -- delat encode是优化手段
+    -- 仅在使用时执行encode操作，这在打印的日志等级实际上不在配置范围内的调用十分有效
+    -- 即日志等级error以上的，调用info操作时不打印日志，即不需要执行encode操作
     core.log.warn("new plugins: ", core.json.delay_encode(processed))
 
+    -- 处理当前已挂载插件
     for name, plugin in pairs(local_plugins_hash) do
         local ty = PLUGIN_TYPE_HTTP
         if plugin.type == "wasm" then
             ty = PLUGIN_TYPE_HTTP_WASM
         end
+        -- 取消挂载
         unload_plugin(name, ty)
     end
 
     core.table.clear(local_plugins)
     core.table.clear(local_plugins_hash)
 
+    -- 重新挂载插件们
     for name, value in pairs(processed) do
         local ty = PLUGIN_TYPE_HTTP
         if type(value) == "table" then
             ty = PLUGIN_TYPE_HTTP_WASM
             name = value
         end
+        -- 载入插件，主要是做插件参数检查、init函数调用
         load_plugin(name, local_plugins, ty)
     end
 
     -- sort by plugin's priority
+    -- 按照优先级排序
     if #local_plugins > 1 then
         sort_tab(local_plugins, sort_plugin)
     end
 
     for i, plugin in ipairs(local_plugins) do
         local_plugins_hash[plugin.name] = plugin
+        -- 当debug模式时打印出加载的插件信息
         if enable_debug() then
             core.log.warn("loaded plugin and sort by priority:",
                           " ", plugin.priority,
@@ -205,6 +223,7 @@ local function load(plugin_names, wasm_plugin_names)
         end
     end
 
+    -- 重载次数
     _M.load_times = _M.load_times + 1
     core.log.info("load plugin times: ", _M.load_times)
     return true
@@ -258,16 +277,20 @@ function _M.load(config)
     local http_plugin_names
     local stream_plugin_names
 
+    -- 启动时候
     if not config then
         -- called during starting or hot reload in admin
         local err
+        -- 读取最新（不缓存）的本地配置文件（conf/
         local_conf, err = core.config.local_conf(true)
         if not local_conf then
             -- the error is unrecoverable, so we need to raise it
             error("failed to load the configuration file: " .. err)
         end
 
+        -- conf-default.yaml中的plugins项
         http_plugin_names = local_conf.plugins
+        -- conf-default.yaml中的stream_plugins项
         stream_plugin_names = local_conf.stream_plugins
     else
         -- called during synchronizing plugin data
@@ -288,15 +311,19 @@ function _M.load(config)
         end
     end
 
+    -- 当当前模块处于http时
     if ngx.config.subsystem == "http" then
+        -- 没有http相关插件
         if not http_plugin_names then
             core.log.error("failed to read plugin list from local file")
         else
+            -- 摘出wasm插件
             local wasm_plugin_names = {}
             if local_conf.wasm then
                 wasm_plugin_names = local_conf.wasm.plugins
             end
 
+            -- 载入插件
             local ok, err = load(http_plugin_names, wasm_plugin_names)
             if not ok then
                 core.log.error("failed to load plugins: ", err)
@@ -355,7 +382,9 @@ end
 
 
 function _M.filter(ctx, conf, plugins, route_conf)
+    -- etcd里面的配置
     local user_plugin_conf = conf.value.plugins
+    -- 没有插件配置
     if user_plugin_conf == nil or
        core.table.nkeys(user_plugin_conf) == 0 then
         trace_plugins_info_for_debug(nil, nil)
@@ -364,13 +393,20 @@ function _M.filter(ctx, conf, plugins, route_conf)
         return plugins or core.tablepool.fetch("plugins", 0, 0)
     end
 
+    -- 第四个参数 至今还没见过
+    -- route_plugin_conf == nil
     local route_plugin_conf = route_conf and route_conf.value.plugins
+    -- 这是是空的plugins
     plugins = plugins or core.tablepool.fetch("plugins", 32, 0)
     for _, plugin_obj in ipairs(local_plugins) do
         local name = plugin_obj.name
         local plugin_conf = user_plugin_conf[name]
 
+        -- local plugins是数组所以得遍历这个
+        -- 而且只有32 （所以只能加载32个插件）
         if type(plugin_conf) == "table" and not plugin_conf.disable then
+            -- prefer_route 当且仅当路由和全局插件都配置的时候
+            -- 仅运行在路由
             if plugin_obj.run_policy == "prefer_route" and route_plugin_conf ~= nil then
                 local plugin_conf_in_route = route_plugin_conf[name]
                 if plugin_conf_in_route and not plugin_conf_in_route.disable then
@@ -378,6 +414,7 @@ function _M.filter(ctx, conf, plugins, route_conf)
                 end
             end
 
+            -- 神奇的设计
             core.table.insert(plugins, plugin_obj)
             core.table.insert(plugins, plugin_conf)
 
@@ -421,6 +458,7 @@ local function merge_service_route(service_conf, route_conf)
     new_conf.value.id = route_conf.value.id
     new_conf.modifiedIndex = route_conf.modifiedIndex
 
+    -- 把原有的route的插件配置赋值到新的里面去
     if route_conf.value.plugins then
         for name, conf in pairs(route_conf.value.plugins) do
             if not new_conf.value.plugins then
@@ -431,6 +469,8 @@ local function merge_service_route(service_conf, route_conf)
         end
     end
 
+    -- 挪一下upstream的配置
+    -- upstream以upstream > upstream id为准
     local route_upstream = route_conf.value.upstream
     if route_upstream then
         new_conf.value.upstream = route_upstream
@@ -440,28 +480,34 @@ local function merge_service_route(service_conf, route_conf)
         new_conf.has_domain = route_conf.has_domain
     end
 
+    -- 挪一下upstream id 注意 如果有upstream则这里已经无了
     if route_conf.value.upstream_id then
         new_conf.value.upstream_id = route_conf.value.upstream_id
         new_conf.has_domain = route_conf.has_domain
     end
 
+    -- copy
     if route_conf.value.script then
         new_conf.value.script = route_conf.value.script
     end
 
+    -- copy
     if route_conf.value.timeout then
         new_conf.value.timeout = route_conf.value.timeout
     end
 
+    -- copy
     if route_conf.value.name then
         new_conf.value.name = route_conf.value.name
     else
         new_conf.value.name = nil
     end
 
+    -- copy
     if route_conf.value.hosts then
         new_conf.value.hosts = route_conf.value.hosts
     end
+    -- copy
     if not new_conf.value.hosts and route_conf.value.host then
         new_conf.value.host = route_conf.value.host
     end
@@ -497,6 +543,7 @@ local function merge_consumer_route(route_conf, consumer_conf)
             new_route_conf.value.plugins = {}
         end
 
+        -- merge consumer配置的插件
         new_route_conf.value.plugins[name] = conf
     end
 
@@ -510,9 +557,11 @@ function _M.merge_consumer_route(route_conf, consumer_conf, api_ctx)
     core.log.info("consumer conf: ", core.json.delay_encode(consumer_conf))
 
     local flag = tostring(route_conf) .. tostring(consumer_conf)
+    -- 这里走了一下缓存
     local new_conf = merged_route(flag, nil,
                         merge_consumer_route, route_conf, consumer_conf)
 
+    -- 更新基础属性
     api_ctx.conf_type = api_ctx.conf_type .. "&consumer"
     api_ctx.conf_version = api_ctx.conf_version .. "&" ..
                            api_ctx.consumer_ver
@@ -547,16 +596,19 @@ end
 
 function _M.init_worker()
     -- some plugins need to be initialized in init* phases
+    -- 当当前模块为http模块时候初始化普罗米修斯
     if ngx.config.subsystem == "http" then
         require("apisix.plugins.prometheus.exporter").init()
     end
 
     _M.load()
 
+    -- 当开启admin api时候
     if local_conf and not local_conf.apisix.enable_admin then
         init_plugins_syncer()
     end
 
+    -- 注册同步插件元数据，config模块会watch配置
     local plugin_metadatas, err = core.config.new("/plugin_metadata",
         {automatic = true}
     )

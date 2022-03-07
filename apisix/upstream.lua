@@ -232,6 +232,8 @@ end
 
 
 function _M.set_by_route(route, api_ctx)
+    -- 这里会触发是因为插件提前set好叻
+    -- 例如traffic-split插件
     if api_ctx.upstream_conf then
         -- upstream_conf has been set by traffic-split plugin
         return
@@ -244,6 +246,7 @@ function _M.set_by_route(route, api_ctx)
     -- core.log.info("up_conf: ", core.json.delay_encode(up_conf, true))
 
     if up_conf.service_name then
+        -- service_name需同discovery搭配，服务发现
         if not discovery then
             return 503, "discovery is uninitialized"
         end
@@ -257,13 +260,17 @@ function _M.set_by_route(route, api_ctx)
             return 503, err
         end
 
+        -- 调用服务发现获取节点信息
         local new_nodes, err = dis.nodes(up_conf.service_name, up_conf.discovery_args)
         if not new_nodes then
             return HTTP_CODE_UPSTREAM_UNAVAILABLE, "no valid upstream node: " .. (err or "nil")
         end
 
+        -- 对比是否有更新
         local same = upstream_util.compare_upstream_node(up_conf, new_nodes)
+        -- 当存在不同时
         if not same then
+            -- 检查node格式
             local pass, err = core.schema.check(core.schema.discovery_nodes, new_nodes)
             if not pass then
                 return HTTP_CODE_UPSTREAM_UNAVAILABLE, "invalid nodes format: " .. err
@@ -290,10 +297,12 @@ function _M.set_by_route(route, api_ctx)
                  tostring(up_conf), up_conf)
 
     local nodes_count = up_conf.nodes and #up_conf.nodes or 0
+    -- 当没有节点时候
     if nodes_count == 0 then
         return HTTP_CODE_UPSTREAM_UNAVAILABLE, "no valid upstream node"
     end
 
+    -- 是四层代理的话
     if not is_http then
         local ok, err = fill_node_info(up_conf, nil, true)
         if not ok then
@@ -323,11 +332,13 @@ function _M.set_by_route(route, api_ctx)
         return 503, err
     end
 
+    -- 节点大于1个时候，要做健康检查
     if nodes_count > 1 then
         local checker = fetch_healthchecker(up_conf)
         api_ctx.up_checker = checker
     end
 
+    -- 走加密
     local scheme = up_conf.scheme
     if (scheme == "https" or scheme == "grpcs") and up_conf.tls then
         -- the sni here is just for logging

@@ -56,6 +56,7 @@ local patch_tcp_socket
 do
     local old_tcp_sock_connect
 
+    -- 主要是为了解析域名
     local function new_tcp_sock_connect(sock, host, port, opts)
         local core_str = require("apisix.core.string")
         local resolver = require("apisix.core.resolver")
@@ -68,6 +69,7 @@ do
                 end
 
             elseif not ipmatcher.parse_ipv4(host) and not ipmatcher.parse_ipv6(host) then
+                -- 默认的openresty没有设置resolver时不能解析出域名，所以这里实现了解析的功能
                 local err
                 host, err = resolver.parse_domain(host)
                 if not host then
@@ -352,11 +354,12 @@ local function luasocket_tcp()
     return setmetatable({sock = sock}, mt)
 end
 
-
+-- 替换全局的tcp、udp connect方法为支持域名connect
 function _M.patch()
     -- make linter happy
     -- luacheck: ignore
     ngx_socket.tcp = function ()
+        -- 获取当前所属阶段
         local phase = get_phase()
         if phase ~= "init" and phase ~= "init_worker" then
             return patch_tcp_socket(original_tcp())
