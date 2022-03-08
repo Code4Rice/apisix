@@ -37,6 +37,7 @@ function _M.get_exported_vars()
 end
 
 
+-- 如果 line 为空，或者当前 line 最开头的字符为 # 或者 $，返回 false
 local function is_empty_yaml_line(line)
     return line == '' or str_find(line, '^%s*$') or str_find(line, '^%s*#')
 end
@@ -51,9 +52,10 @@ local function tab_is_array(t)
     return #t == count
 end
 
-
+-- 遍历入参 conf，如果里面有需要替换的参数，则从环境变量中寻找并匹配
 local function resolve_conf_var(conf)
     for key, val in pairs(conf) do
+        -- 如果是 table 类型的，则继续 resolve_conf_var
         if type(val) == "table" then
             local ok, err = resolve_conf_var(val)
             if not ok then
@@ -65,15 +67,25 @@ local function resolve_conf_var(conf)
             local var_used = false
             -- we use '${{var}}' because '$var' and '${var}' are taken
             -- by Nginx
+            -- 如果存在动态修改的变量，这里拿 - http://${{ETCD_HOST:=localhost}}:2379 为例
+            -- 则从环境变量获取，并覆盖
+
+            -- 匹配 ${{}}，所以这里获取到的 var 为 ETCD_HOST:=localhost
             local new_val = val:gsub("%$%{%{%s*([%w_]+[%:%=]?.-)%s*%}%}", function(var)
+                -- var： ETCD_HOST:=localhost
+                -- 获取 : 和 = 号所在索引 （10， 11）
                 local i, j = var:find("%:%=")
                 local default
+                -- 拼接 default 和 var
                 if i and j then
                     default = var:sub(i + 2, #var)
                     default = default:gsub('^%s*(.-)%s*$', '%1')
                     var = var:sub(1, i - 1)
                 end
+                -- 拼接后 default：localhost var：ETCD_HOST
 
+                -- 从环境变量中获取 var: ETCD_HOST 的内容
+                -- 将映射写入 exported_vars 中，后续用的到？
                 local v = getenv(var) or default
                 if v then
                     if not exported_vars then
@@ -94,6 +106,7 @@ local function resolve_conf_var(conf)
                 return nil, err
             end
 
+            -- 如果上面有匹配到值，则做一下特殊配置
             if var_used then
                 if tonumber(new_val) ~= nil then
                     new_val = tonumber(new_val)
@@ -104,6 +117,7 @@ local function resolve_conf_var(conf)
                 end
             end
 
+            -- 配置赋值
             conf[key] = new_val
         end
     end
@@ -186,30 +200,39 @@ local function merge_conf(base, new_tab, ppath)
     return base
 end
 
-
+-- 读取 yaml 配置
 function _M.read_yaml_conf(apisix_home)
+    -- 配置 apisix 项目所在地址
     if apisix_home then
         profile.apisix_home = apisix_home .. "/"
     end
 
+    -- 拼接 config-default 配置文件所在路径
     local local_conf_path = profile:yaml_path("config-default")
+
+    -- 读取文件
     local default_conf_yaml, err = util.read_file(local_conf_path)
     if not default_conf_yaml then
         return nil, err
     end
 
+    -- yaml 文件序列化
     local default_conf = yaml.parse(default_conf_yaml)
     if not default_conf then
         return nil, "invalid config-default.yaml file"
     end
 
+    -- 拼接 config 配置文件所在路径
     local_conf_path = profile:yaml_path("config")
+
+    -- 读取文件
     local user_conf_yaml, err = util.read_file(local_conf_path)
     if not user_conf_yaml then
         return nil, err
     end
 
     local is_empty_file = true
+    -- 如果 line 为空，或者当前 line 最开头的字符为 # 或者 $，将 is_empty_file 设为 false？
     for line in str_gmatch(user_conf_yaml .. '\n', '(.-)\r?\n') do
         if not is_empty_yaml_line(line) then
             is_empty_file = false
@@ -218,11 +241,14 @@ function _M.read_yaml_conf(apisix_home)
     end
 
     if not is_empty_file then
+        -- yaml 文件序列化
         local user_conf = yaml.parse(user_conf_yaml)
         if not user_conf then
             return nil, "invalid config.yaml file"
         end
 
+
+        -- 结合环境变量将 yaml 动态参数初始化
         local ok, err = resolve_conf_var(user_conf)
         if not ok then
             return nil, err

@@ -21,9 +21,12 @@ local _M = {
     apisix_home = (ngx and ngx.config.prefix()) or ""
 }
 
-
+-- 读取项目位置下的配置文件
+-- @param file_name 文件名称
 function _M.yaml_path(self, file_name)
     local file_path = self.apisix_home  .. "conf/" .. file_name
+    -- 如果 self-profile 不为空，且读取的文件名不是 config-default
+    -- 按照 file_path + "-" + file_profile 的方式来拼接文件路径
     if self.profile and file_name ~= "config-default" then
         file_path = file_path .. "-" .. self.profile
     end
