@@ -16,14 +16,18 @@
 --
 local log = require("apisix.core.log")
 local utils = require("apisix.core.utils")
+-- 获取本地配置
 local local_conf, err = require("apisix.core.config_local").local_conf()
 if not local_conf then
     error("failed to parse yaml config: " .. err)
 end
 
+-- 如果本地配置中有指定配置中心的话，就按配置中心的来，如果没有指定，则默认走 etcd
 local config_center = local_conf.apisix and local_conf.apisix.config_center
                       or "etcd"
 log.info("use config_center: ", config_center)
+
+-- 对应配置中心的初始化
 local config = require("apisix.core.config_" .. config_center)
 config.type = config_center
 

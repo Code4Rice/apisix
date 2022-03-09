@@ -151,11 +151,14 @@ local function path_is_multi_type(path, type_val)
     return false
 end
 
-
+-- 合并配置（把 new_tab 合入 base 中）
 local function merge_conf(base, new_tab, ppath)
     ppath = ppath or ""
 
     for key, val in pairs(new_tab) do
+        -- 下面为针对不同类型的一系列赋值过程
+        -- 如果目标 val 类型为 table 且无内容，则 base 对应 key 的内容设为 nil
+        -- 如果目标 val 类型为 table 且有值，则递归 merge_conf()
         if type(val) == "table" then
             if tinyyaml_type(val) == "null" then
                 base[key] = nil
@@ -168,6 +171,7 @@ local function merge_conf(base, new_tab, ppath)
                     base[key] = {}
                 end
 
+                -- 合并子项（子 table）
                 local ok, err = merge_conf(
                     base[key],
                     val,
@@ -178,13 +182,17 @@ local function merge_conf(base, new_tab, ppath)
                 end
             end
         else
+            -- 以下为 val 类型不为 table 的场景，直接判断并赋值 base 中即可
             local type_val = type(val)
 
             if base[key] == nil then
                 base[key] = val
+            -- 如果目标表中存在对应的 key
             elseif type(base[key]) ~= type_val then
                 local path = ppath == "" and key or ppath .. "->" .. key
 
+                -- 判断当前值是否为复合类型
+                -- 在 path_is_multi_type() 中有将对应的场景单独列出来判断
                 if path_is_multi_type(path, type_val) then
                     base[key] = val
                 else
@@ -254,6 +262,7 @@ function _M.read_yaml_conf(apisix_home)
             return nil, err
         end
 
+        -- 将 user_conf 内容合入 default_conf 里
         ok, err = merge_conf(default_conf, user_conf)
         if not ok then
             return nil, err

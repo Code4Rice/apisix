@@ -35,12 +35,14 @@ function _M.local_conf(force)
         return config_data
     end
 
+    -- 将 yaml 配置读取，并合并
     local default_conf, err = file.read_yaml_conf()
     if not default_conf then
         return nil, err
     end
 
     -- fill the default value by the schema
+    -- 配置结构检查，没啥好看的
     schema.validate(default_conf)
 
     config_data = default_conf
