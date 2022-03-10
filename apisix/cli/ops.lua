@@ -252,8 +252,13 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     local enabled_plugins = {}
-    for i, name in ipairs(yaml_conf.plugins) do
+    for i, name in ipairs(yaml_conf.plugins or {}) do
         enabled_plugins[name] = true
+    end
+
+    local enabled_stream_plugins = {}
+    for i, name in ipairs(yaml_conf.stream_plugins or {}) do
+        enabled_stream_plugins[name] = true
     end
 
     if enabled_plugins["proxy-cache"] and not yaml_conf.apisix.proxy_cache then
@@ -282,53 +287,39 @@ Please modify "admin_key" in conf/config.yaml .
 
     local ports_to_check = {}
 
+    local function validate_and_get_listen_addr(port_name, default_ip, configured_ip,
+                                                default_port, configured_port)
+        local ip = configured_ip or default_ip
+        local port = tonumber(configured_port) or default_port
+        if ports_to_check[port] ~= nil then
+            util.die(port_name .. " ", port, " conflicts with ", ports_to_check[port], "\n")
+        end
+        ports_to_check[port] = port_name
+        return ip .. ":" .. port
+    end
+
     -- listen in admin use a separate port, support specific IP, compatible with the original style
     local admin_server_addr
     if yaml_conf.apisix.enable_admin then
-        if yaml_conf.apisix.admin_listen or yaml_conf.apisix.port_admin then
-            local ip = "0.0.0.0"
-            local port = yaml_conf.apisix.port_admin or 9180
-
-            if yaml_conf.apisix.admin_listen then
-                ip = yaml_conf.apisix.admin_listen.ip or ip
-                port = tonumber(yaml_conf.apisix.admin_listen.port) or port
-            end
-
-            if ports_to_check[port] ~= nil then
-                util.die("admin port ", port, " conflicts with ", ports_to_check[port], "\n")
-            end
-
-            admin_server_addr = ip .. ":" .. port
-            ports_to_check[port] = "admin"
+        if yaml_conf.apisix.admin_listen then
+            admin_server_addr = validate_and_get_listen_addr("admin port", "0.0.0.0",
+                                        yaml_conf.apisix.admin_listen.ip,
+                                        9180, yaml_conf.apisix.admin_listen.port)
+        elseif yaml_conf.apisix.port_admin then
+            admin_server_addr = validate_and_get_listen_addr("admin port", "0.0.0.0", nil,
+                                        9180, yaml_conf.apisix.port_admin)
         end
     end
 
     local control_server_addr
     if yaml_conf.apisix.enable_control then
         if not yaml_conf.apisix.control then
-            if ports_to_check[9090] ~= nil then
-                util.die("control port 9090 conflicts with ", ports_to_check[9090], "\n")
-            end
-            control_server_addr = "127.0.0.1:9090"
-            ports_to_check[9090] = "control"
+            control_server_addr = validate_and_get_listen_addr("control port", "127.0.0.1", nil,
+                                          9090, nil)
         else
-            local ip = yaml_conf.apisix.control.ip
-            local port = tonumber(yaml_conf.apisix.control.port)
-
-            if ip == nil then
-                ip = "127.0.0.1"
-            end
-
-            if not port then
-                port = 9090
-            end
-
-            if ports_to_check[port] ~= nil then
-                util.die("control port ", port, " conflicts with ", ports_to_check[port], "\n")
-            end
-
-            control_server_addr = ip .. ":" .. port
-            ports_to_check[port] = "control"
+            control_server_addr = validate_and_get_listen_addr("control port", "127.0.0.1",
+                                          yaml_conf.apisix.control.ip,
+                                          9090, yaml_conf.apisix.control.port)
         end
     end
 
@@ -336,23 +327,9 @@ Please modify "admin_key" in conf/config.yaml .
     if yaml_conf.plugin_attr.prometheus then
         local prometheus = yaml_conf.plugin_attr.prometheus
         if prometheus.enable_export_server then
-            local ip = prometheus.export_addr.ip
-            local port = tonumber(prometheus.export_addr.port)
-
-            if ip == nil then
-                ip = "127.0.0.1"
-            end
-
-            if not port then
-                port = 9091
-            end
-
-            if ports_to_check[port] ~= nil then
-                util.die("prometheus port ", port, " conflicts with ", ports_to_check[port], "\n")
-            end
-
-            prometheus_server_addr = ip .. ":" .. port
-            ports_to_check[port] = "prometheus"
+            prometheus_server_addr = validate_and_get_listen_addr("prometheus port", "127.0.0.1",
+                                             prometheus.export_addr.ip,
+                                             9091, prometheus.export_addr.port)
         end
     end
 
@@ -547,6 +524,7 @@ Please modify "admin_key" in conf/config.yaml .
         use_apisix_openresty = use_apisix_openresty,
         error_log = {level = "warn"},
         enabled_plugins = enabled_plugins,
+        enabled_stream_plugins = enabled_stream_plugins,
         dubbo_upstream_multiplex_count = dubbo_upstream_multiplex_count,
         tcp_enable_ssl = tcp_enable_ssl,
         admin_server_addr = admin_server_addr,
@@ -678,18 +656,26 @@ local function start(env, ...)
     -- Because the worker process started by apisix has "nobody" permission,
     -- it cannot access the `/root` directory. Therefore, it is necessary to
     -- prohibit APISIX from running in the /root directory.
+
+    -- worker进程只有nobody权限，在root目录下没有权限
     if env.is_root_path then
         util.die("Error: It is forbidden to run APISIX in the /root directory.\n")
     end
 
+    -- 创建日志目录
     local cmd_logs = "mkdir -p " .. env.apisix_home .. "/logs"
     util.execute_cmd(cmd_logs)
 
     -- check running
+    -- 检测是否已经启动的Nginx
     local pid_path = env.apisix_home .. "/logs/nginx.pid"
+
+    -- 通过pid文件获取进程号
     local pid = util.read_file(pid_path)
     pid = tonumber(pid)
     if pid then
+        -- 通过lsof -p pid的方式来判断进程是否在运行
+        -- 如果pid没有进程在使用，则logs/nginx.pid会被新的pid文件覆盖
         local lsof_cmd = "lsof -p " .. pid
         local res, err = util.execute_cmd(lsof_cmd)
         if not (res and res == "") then
@@ -706,6 +692,7 @@ local function start(env, ...)
               ", the file will be overwritten")
     end
 
+    -- 引入命令行解析器，可以通过-c选项自定义配置文件路径
     local parser = argparse()
     parser:argument("_", "Placeholder")
     parser:option("-c --config", "location of customized config.yaml")
@@ -714,15 +701,21 @@ local function start(env, ...)
     local args = parser:parse()
 
     local customized_yaml = args["config"]
+
+    -- 判断是否有自定义配置文件路径
     if customized_yaml then
         profile.apisix_home = env.apisix_home .. "/"
         local local_conf_path = profile:yaml_path("config")
 
+
+        --  备份默认配置文件
         local err = util.execute_cmd_with_error("mv " .. local_conf_path .. " "
                                                 .. local_conf_path .. ".bak")
         if #err > 0 then
             util.die("failed to mv config to backup, error: ", err)
         end
+
+        -- 用自定义配置文件替换默认配置文件
         err = util.execute_cmd_with_error("ln " .. customized_yaml .. " " .. local_conf_path)
         if #err > 0 then
             util.execute_cmd("mv " .. local_conf_path .. ".bak " .. local_conf_path)
@@ -732,9 +725,13 @@ local function start(env, ...)
         print("Use customized yaml: ", customized_yaml)
     end
 
+    -- apisix配置初始化
     init(env)
+
+    -- etcd配置初始化
     init_etcd(env, args)
 
+    -- 通过启动OpenResty运行APISIX
     util.execute_cmd(env.openresty_args)
 end
 
@@ -850,17 +847,22 @@ local action = {
 }
 
 
+-- 选项动作的执行，传入环境和参数
 function _M.execute(env, arg)
     local cmd_action = arg[1]
+
+    -- 没选择动作默认返回help
     if not cmd_action then
         return help()
     end
 
+    -- 所选动作不在定义范围内，返回异常信息
     if not action[cmd_action] then
         stderr:write("invalid argument: ", cmd_action, "\n")
         return help()
     end
 
+    -- 执行具体函数并传入环境和参数
     action[cmd_action](env, arg[2])
 end
 

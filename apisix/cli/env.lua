@@ -28,7 +28,7 @@ local package = package
 local tonumber = tonumber
 
 return function (apisix_home, pkg_cpath_org, pkg_path_org)
-    -- ulimit setting should be checked when APISIX starts
+    -- 获取内核设置的同时可打开文件描述符的最大值
     local res, err = util.execute_cmd("ulimit -n")
     if not res then
         error("failed to exec ulimit cmd \'ulimit -n \', err: " .. err)
@@ -41,6 +41,8 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
     -- only for developer, use current folder as working space
     local is_root_path = false
     local script_path = arg[0]
+
+    -- 看是否脚本执行的cli/apisix.lua是否是以./这样的相对路径开头的
     if script_path:sub(1, 2) == './' then
         apisix_home = util.trim(util.execute_cmd("pwd"))
         if not apisix_home then
@@ -49,6 +51,8 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
 
         -- determine whether the current path is under the "/root" folder.
         -- "/root/" is the root folder flag.
+
+        -- 判断项目是否在系统的根目录下
         if str_find(apisix_home .. "/", '/root/', nil, true) == 1 then
             is_root_path = true
         end
@@ -60,14 +64,18 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
                          .. apisix_home .. "/deps/share/lua/5.1/?/init.lua;"
                          .. apisix_home .. "/deps/share/lua/5.1/?.lua;;"
 
+        -- 根据确认的项目根目录路径设置lua模块路径以及c模块路径，并将路径放入全局路径中
+        -- 不清楚为什么不把默认路径的拼接逻辑放到此代码块中
         package.cpath = pkg_cpath .. package.cpath
         package.path  = pkg_path .. package.path
     end
 
     do
-        -- skip luajit environment
+        -- 通过pcall执行require table.new来判断LuaJIT版本是否大于2.1（因为LuaJIT在2.1才引入table.new反法)
         local ok = pcall(require, "table.new")
         if not ok then
+            -- 通过pcall来判断引入cjson模块是否成功
+            -- 如果LuaJIT版本不大于2.1且引入cjson模块成功，需要删除lua本身的cjson模块，而是使用OpenResty中的cjson模块
             local ok, json = pcall(require, "cjson")
             if ok and json then
                 stderr:write("please remove the cjson library in Lua, it may "
@@ -78,11 +86,14 @@ return function (apisix_home, pkg_cpath_org, pkg_path_org)
         end
     end
 
+    -- OpenResty真正的启动执行命令和参数
     local openresty_args = [[openresty -p ]] .. apisix_home .. [[ -c ]]
                            .. apisix_home .. [[/conf/nginx.conf]]
 
+    -- 所需etcd的最小版本
     local min_etcd_version = "3.4.0"
 
+    --  env.lua主要确定的环境变量返回并传入到ops中
     return {
         apisix_home = apisix_home,
         is_root_path = is_root_path,
