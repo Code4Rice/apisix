@@ -698,12 +698,14 @@ function _M.http_header_filter_phase()
 
     core.response.set_header("Server", ver_header)
 
+    -- 从上下文获取上游请求状态
     local up_status = get_var("upstream_status")
     -- 当上游节点不健康的时候 设置 upstream status
     if up_status and #up_status == 3
        and tonumber(up_status) >= 500
        and tonumber(up_status) <= 599
     then
+        -- 当上游请求不健康时 写入header
         set_resp_upstream_status(up_status)
     elseif up_status and #up_status > 3 then
         -- the up_status can be "502, 502" or "502, 502 : "
@@ -727,6 +729,7 @@ function _M.http_header_filter_phase()
         return
     end
 
+    -- 当开启debug模式时
     local debug_headers = api_ctx.debug_headers
     if debug_headers then
         local deduplicate = core.table.new(#debug_headers, 0)
@@ -742,32 +745,38 @@ function _M.http_body_filter_phase()
     common_phase("body_filter")
 end
 
-
+-- 上报一下当前请求上游的健康状态
 local function healthcheck_passive(api_ctx)
+    -- 获取检查检查对象
     local checker = api_ctx.up_checker
     if not checker then
         return
     end
 
     local up_conf = api_ctx.upstream_conf
+    -- upstream的被动检查配置
     local passive = up_conf.checks.passive
+    -- 没有就跳过，因为这里是上报被动检查用的
     if not passive then
         return
     end
 
     core.log.info("enabled healthcheck passive")
+    -- 主要用于获取主机名
     local host = up_conf.checks and up_conf.checks.active
                  and up_conf.checks.active.host
     local port = up_conf.checks and up_conf.checks.active
                  and up_conf.checks.active.port
 
     local resp_status = ngx.status
+    -- 获取被动检查的健康状态列表
     local http_statuses = passive and passive.healthy and
                           passive.healthy.http_statuses
     core.log.info("passive.healthy.http_statuses: ",
                   core.json.delay_encode(http_statuses))
     if http_statuses then
         for i, status in ipairs(http_statuses) do
+            -- 如果当前状态在配置的健康状态列表中，则上报
             if resp_status == status then
                 checker:report_http_status(api_ctx.balancer_ip,
                                            port or api_ctx.balancer_port,
@@ -786,6 +795,7 @@ local function healthcheck_passive(api_ctx)
     end
 
     for i, status in ipairs(http_statuses) do
+        -- 上报不健康状态
         if resp_status == status then
             checker:report_http_status(api_ctx.balancer_ip,
                                        port or api_ctx.balancer_port,
@@ -817,8 +827,7 @@ function _M.http_log_phase()
     healthcheck_passive(api_ctx)
 
     -- 执行后置负载均衡脚本
-    -- 用于上报选出来的节点的情况
-    -- 以便下次选节点提供依据
+    -- 释放当上游超时重试时记录失败ip的table
     if api_ctx.server_picker and api_ctx.server_picker.after_balance then
         api_ctx.server_picker.after_balance(api_ctx, false)
     end
