@@ -146,7 +146,9 @@ local function get_lua_path(conf)
 end
 
 
+-- 初始化函数, 传入项目所需环境参数
 local function init(env)
+    -- 判断项目路径是否在/root下，如果是给予安全告警
     if env.is_root_path then
         print('Warning! Running apisix under /root is only suitable for '
               .. 'development environments and it is dangerous to do so. '
@@ -154,6 +156,7 @@ local function init(env)
               .. 'other than /root.')
     end
 
+    -- 判断系统文件描述符的最大打开数是否小于，如果小于1024给予性能告警
     local min_ulimit = 1024
     if env.ulimit <= min_ulimit then
         print(str_format("Warning! Current maximum number of open file "
@@ -163,17 +166,20 @@ local function init(env)
     end
 
     -- read_yaml_conf
+    -- 读取yaml配置文件
     local yaml_conf, err = file.read_yaml_conf(env.apisix_home)
     if not yaml_conf then
-        util.die("failed to read local yaml config of apisix: ", err, "\n")
+      util.die("failed to read local yaml config of apisix: ", err, "\n")
     end
 
+    -- 通过schema来判断配置的格式是否正确
     local ok, err = schema.validate(yaml_conf)
     if not ok then
         util.die(err, "\n")
     end
 
-    -- check the Admin API token
+    -- 检测是否开启admin api
+    -- 如果ip段范围为127则通过校验
     local checked_admin_key = false
     if yaml_conf.apisix.enable_admin and yaml_conf.apisix.allow_admin then
         for _, allow_ip in ipairs(yaml_conf.apisix.allow_admin) do
@@ -183,6 +189,7 @@ local function init(env)
         end
     end
 
+    -- 如开启amdin api且不是127ip段的则需要设置一个token为api调用做校验
     if yaml_conf.apisix.enable_admin and not checked_admin_key then
         local help = [[
 
@@ -190,6 +197,7 @@ local function init(env)
 Please modify "admin_key" in conf/config.yaml .
 
 ]]
+        -- 校验token的类型及合法性
         if type(yaml_conf.apisix.admin_key) ~= "table" or
            #yaml_conf.apisix.admin_key == 0
         then
@@ -207,6 +215,7 @@ Please modify "admin_key" in conf/config.yaml .
                 util.die(help:format("ERROR: missing valid Admin API token."), "\n")
             end
 
+            -- 使用官方文档中的默认token是具有风险的
             if admin.key == "edd1c9f034335f136f87ad84b625c8f1" then
                 stderr:write(
                     help:format([[WARNING: using fixed Admin API token has security risk.]]),
@@ -216,17 +225,20 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- Admin API只支持基于etcd的集群模式，不支持yaml的单机模式
     if yaml_conf.apisix.enable_admin and
         yaml_conf.apisix.config_center == "yaml"
     then
         util.die("ERROR: Admin API can only be used with etcd config_center.\n")
     end
 
+    -- 获取openresty的版本
     local or_ver = get_openresty_version()
     if or_ver == nil then
         util.die("can not find openresty\n")
     end
 
+    -- apisix需要的openresty最小版本是1.17.8
     local need_ver = "1.17.8"
     if not version_greater_equal(or_ver, need_ver) then
         util.die("openresty version must >=", need_ver, " current ", or_ver, "\n")
@@ -237,6 +249,7 @@ Please modify "admin_key" in conf/config.yaml .
         use_openresty_1_17 = true
     end
 
+    -- 判断openresty是否有安装性能统计模块http_stub_status_module
     local or_info = util.execute_cmd("openresty -V 2>&1")
     local with_module_status = true
     if or_info and not or_info:find("http_stub_status_module", 1, true) then
@@ -246,25 +259,30 @@ Please modify "admin_key" in conf/config.yaml .
         with_module_status = false
     end
 
+    -- 判断是否有使用基于apisix-nginx-module模块的openresty
     local use_apisix_openresty = true
     if or_info and not or_info:find("apisix-nginx-module", 1, true) then
         use_apisix_openresty = false
     end
 
+    -- 获取启用的插件列表
     local enabled_plugins = {}
     for i, name in ipairs(yaml_conf.plugins or {}) do
         enabled_plugins[name] = true
     end
 
+    -- 获取启用的stream插件列表
     local enabled_stream_plugins = {}
     for i, name in ipairs(yaml_conf.stream_plugins or {}) do
         enabled_stream_plugins[name] = true
     end
 
+    -- 是否开启proxy-cache插件但并没有填写proxy_cache配置
     if enabled_plugins["proxy-cache"] and not yaml_conf.apisix.proxy_cache then
         util.die("missing apisix.proxy_cache for plugin proxy-cache\n")
     end
 
+    -- 是否开启batch-requests插件, 并检查是否有设置real_ip_from
     if enabled_plugins["batch-requests"] then
         local pass_real_client_ip = false
         local real_ip_from = yaml_conf.nginx_config.http.real_ip_from
@@ -287,6 +305,8 @@ Please modify "admin_key" in conf/config.yaml .
 
     local ports_to_check = {}
 
+    -- 检测所用端口是否冲突, 拼接并返回IP地址+端口
+    -- 根据端口名来判断是否冲突
     local function validate_and_get_listen_addr(port_name, default_ip, configured_ip,
                                                 default_port, configured_port)
         local ip = configured_ip or default_ip
@@ -299,6 +319,7 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     -- listen in admin use a separate port, support specific IP, compatible with the original style
+    -- 确认admin_server启用的地址和端口
     local admin_server_addr
     if yaml_conf.apisix.enable_admin then
         if yaml_conf.apisix.admin_listen then
@@ -311,6 +332,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 确认control_server启用的地址和端口
     local control_server_addr
     if yaml_conf.apisix.enable_control then
         if not yaml_conf.apisix.control then
@@ -323,6 +345,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 确认promethus_server启用的地址和端口
     local prometheus_server_addr
     if yaml_conf.plugin_attr.prometheus then
         local prometheus = yaml_conf.plugin_attr.prometheus
@@ -334,7 +357,7 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     local ip_port_to_check = {}
-
+    -- 判断ip地址和端口冲突后将监听信息放到一个talbe中
     local function listen_table_insert(listen_table, scheme, ip, port, enable_http2, enable_ipv6)
         if type(ip) ~= "string" then
             util.die(scheme, " listen ip format error, must be string", "\n")
@@ -369,6 +392,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 确认启用HTTP所监听的端口及相关信息
     local node_listen = {}
     -- listen in http, support multiple ports and specific IP, compatible with the original style
     if type(yaml_conf.apisix.node_listen) == "number" then
@@ -407,6 +431,7 @@ Please modify "admin_key" in conf/config.yaml .
     end
     yaml_conf.apisix.node_listen = node_listen
 
+    -- 确认启用HTTPS的所监听的端口及相关信息
     local ssl_listen = {}
     -- listen in https, support multiple ports, support specific IP
     for _, value in ipairs(yaml_conf.apisix.ssl.listen) do
@@ -454,6 +479,8 @@ Please modify "admin_key" in conf/config.yaml .
 
     yaml_conf.apisix.ssl.listen = ssl_listen
 
+
+    -- 确定指定信任证书的路径
     if yaml_conf.apisix.ssl.ssl_trusted_certificate ~= nil then
         local cert_path = yaml_conf.apisix.ssl.ssl_trusted_certificate
         -- During validation, the path is relative to PWD
@@ -469,6 +496,7 @@ Please modify "admin_key" in conf/config.yaml .
         yaml_conf.apisix.ssl.ssl_trusted_certificate = cert_path
     end
 
+    --  确认admin api是否有开启ssl
     local admin_api_mtls = yaml_conf.apisix.admin_api_mtls
     if yaml_conf.apisix.https_admin and
        not (admin_api_mtls and
@@ -484,6 +512,7 @@ Please modify "admin_key" in conf/config.yaml .
     yaml_conf.apisix.ssl.ssl_cert = "cert/ssl_PLACE_HOLDER.crt"
     yaml_conf.apisix.ssl.ssl_cert_key = "cert/ssl_PLACE_HOLDER.key"
 
+    -- 确认tcp是否增加ssl认证
     local tcp_enable_ssl
     -- compatible with the original style which only has the addr
     if yaml_conf.apisix.stream_proxy and yaml_conf.apisix.stream_proxy.tcp then
@@ -499,6 +528,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 获dubbo代理中上游连接中最大的多路复用请求数
     local dubbo_upstream_multiplex_count = 32
     if yaml_conf.plugin_attr and yaml_conf.plugin_attr["dubbo-proxy"] then
         local dubbo_conf = yaml_conf.plugin_attr["dubbo-proxy"]
@@ -507,6 +537,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    --  获取dns的缓存时间
     if yaml_conf.apisix.dns_resolver_valid then
         if tonumber(yaml_conf.apisix.dns_resolver_valid) == nil then
             util.die("apisix->dns_resolver_valid should be a number")
@@ -514,6 +545,7 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     -- Using template.render
+    -- 从配置文件中解析并放入sys_conf变量中，再传入模板文件中生成最终的配置文件
     local sys_conf = {
         use_openresty_1_17 = use_openresty_1_17,
         lua_path = env.pkg_path_org,
@@ -540,6 +572,7 @@ Please modify "admin_key" in conf/config.yaml .
         util.die("failed to read `nginx_config` field from yaml file")
     end
 
+    -- 根据系统位数来设定coredump文件大小
     if util.is_32bit_arch() then
         sys_conf["worker_rlimit_core"] = "4G"
     else
@@ -555,6 +588,7 @@ Please modify "admin_key" in conf/config.yaml .
     sys_conf["wasm"] = yaml_conf.wasm
 
 
+    -- 确保nginx进程最大文件打开数大于单worker支持的最大连接数
     local wrn = sys_conf["worker_rlimit_nofile"]
     local wc = sys_conf["event"]["worker_connections"]
     if not wrn or wrn <= wc then
@@ -562,6 +596,7 @@ Please modify "admin_key" in conf/config.yaml .
         sys_conf["worker_rlimit_nofile"] = wc + 128
     end
 
+    -- 研发模式下，进程数为1，关闭端口复用
     if sys_conf["enable_dev_mode"] == true then
         sys_conf["worker_processes"] = 1
         sys_conf["enable_reuseport"] = false
@@ -574,6 +609,7 @@ Please modify "admin_key" in conf/config.yaml .
         sys_conf.allow_admin = nil
     end
 
+    -- 如果没有配置dns默认从系统/etc/resolv.conf文件中获取
     local dns_resolver = sys_conf["dns_resolver"]
     if not dns_resolver or #dns_resolver == 0 then
         local dns_addrs, err = local_dns_resolver("/etc/resolv.conf")
@@ -598,6 +634,7 @@ Please modify "admin_key" in conf/config.yaml .
         end
     end
 
+    -- 可通过环境变量设置nginx进程数
     local env_worker_processes = getenv("APISIX_WORKER_PROCESSES")
     if env_worker_processes then
         sys_conf["worker_processes"] = floor(tonumber(env_worker_processes))
@@ -633,9 +670,11 @@ Please modify "admin_key" in conf/config.yaml .
     end
 
     -- fix up lua path
+    -- lua及c扩展模块路径
     sys_conf["extra_lua_path"] = get_lua_path(yaml_conf.apisix.extra_lua_path)
     sys_conf["extra_lua_cpath"] = get_lua_path(yaml_conf.apisix.extra_lua_cpath)
 
+    -- 加载模板，并通过以上确认的系统配置渲染生成最终配置文件
     local conf_render = template.compile(ngx_tpl)
     local ngxconf = conf_render(sys_conf)
 
