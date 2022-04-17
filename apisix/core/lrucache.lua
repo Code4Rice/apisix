@@ -153,6 +153,7 @@ local function plugin_ctx(lrucache, api_ctx, extra_key, create_obj_func, ...)
     return lrucache(key, ver, create_obj_func, ...)
 end
 
+-- extra key  是插件名称 前置ext或者后置
 local function plugin_ctx_id(api_ctx, extra_key)
     local key, ver = plugin_ctx_key_and_ver(api_ctx, extra_key)
     return key .. "#" .. ver

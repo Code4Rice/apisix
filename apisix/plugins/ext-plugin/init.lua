@@ -116,6 +116,7 @@ do
     local MAX_DATA_SIZE = lshift(1, 24) - 1
 
     function send(sock, ty, data)
+        -- 消息类型
         hdr_buf[0] = ty
 
         local len = #data
@@ -126,6 +127,7 @@ do
             return nil, str_format("the max length of data is %d but got %d", MAX_DATA_SIZE, len)
         end
 
+        -- 大端存长度
         -- length is sent as big endian
         for i = 3, 1, -1 do
             hdr_buf[i] = band(len, 255)
@@ -134,6 +136,7 @@ do
 
         buf[1] = ffi_str(hdr_buf, 4)
         buf[2] = data
+        -- 头部和数据一起发，这样不用去字符串拼接
         return sock:send(buf)
     end
 end
@@ -158,6 +161,7 @@ end
 
 
 local function receive(sock)
+    -- 收包， 4个字节 头，跟发包时候是一样的
     local hdr, err = sock:receive(4)
     if not hdr then
         return nil, err
@@ -169,11 +173,13 @@ local function receive(sock)
     local ty = str_byte(hdr, 1)
     local resp
     local hi, mi, li = str_byte(hdr, 2, 4)
+    -- 大端 长度
     local len = 256 * (256 * hi + mi) + li
 
     core.log.info("receiving rpc type: ", ty, " data length: ", len)
 
     if len > 0 then
+        -- 收包 数据包长度
         resp, err = sock:receive(len)
         if not resp then
             return nil, err
@@ -183,6 +189,7 @@ local function receive(sock)
         end
     end
 
+    -- 错误包回包 调用err_to_msg
     if ty == constants.RPC_ERROR then
         return nil, err_to_msg(resp)
     end
@@ -194,10 +201,12 @@ _M.receive = receive
 
 local generate_id
 do
+    -- 闭包，让count保持唯一
     local count = 0
     local MAX_COUNT = lshift(1, 22)
 
     function generate_id()
+        -- 当前进程id
         local wid = worker_id()
         local id = lshift(wid, 22) + count
         count = count + 1
@@ -273,6 +282,7 @@ local function handle_extra_info(ctx, input)
 
     local res
     local info_type = req:InfoType()
+    -- client 获取变量
     if info_type == extra_info.Var then
         local info = req:Info()
         local var_req = extra_info_var.New()
@@ -280,6 +290,7 @@ local function handle_extra_info(ctx, input)
 
         local var_name = var_req:Name()
         res = ctx.var[var_name]
+    -- client 获取body
     elseif info_type == extra_info.ReqBody then
         local info = req:Info()
         local reqbody_req = extra_info_reqbody.New()
@@ -298,6 +309,7 @@ local function handle_extra_info(ctx, input)
     -- build response
     builder:Clear()
 
+    -- 反序列化得到回包
     local packed_res
     if res then
         -- ensure to pass the res in string type
@@ -315,6 +327,7 @@ end
 
 
 local function fetch_token(key)
+    -- 共享内存获取
     if shdict then
         return shdict:get(key)
     else
@@ -343,6 +356,7 @@ end
 
 
 local function flush_token()
+    -- 重新刷一下共享内存
     if shdict then
         core.log.warn("flush conf token in shared dict")
         shdict:flush_all()
@@ -356,12 +370,14 @@ local rpc_call
 local rpc_handlers = {
     nil,
     function (conf, ctx, sock, unique_key)
+        -- 主要是用来生成id的 进程之间共享
         local token = fetch_token(unique_key)
         if token then
             core.log.info("fetch token from shared dict, token: ", token)
             return token
         end
 
+        -- 创建共享内存锁
         local lock, err = resty_lock:new(shdict_name)
         if not lock then
             return nil, "failed to create lock: " .. err
@@ -372,6 +388,7 @@ local rpc_handlers = {
             return nil, "failed to acquire the lock: " .. err
         end
 
+        -- double check
         local token = fetch_token(unique_key)
         if token then
             lock:unlock()
@@ -381,6 +398,7 @@ local rpc_handlers = {
 
         builder:Clear()
 
+        -- 组装请求包
         local key = builder:CreateString(unique_key)
         local conf_vec
         if conf.conf then
@@ -410,36 +428,44 @@ local rpc_handlers = {
         local req = prepare_conf_req.End(builder)
         builder:Finish(req)
 
+        -- 发包
         local ok, err = send(sock, constants.RPC_PREPARE_CONF, builder:Output())
         if not ok then
             lock:unlock()
             return nil, "failed to send RPC_PREPARE_CONF: " .. err
         end
-
+        -- 收包
         local ty, resp = receive(sock)
         if ty == nil then
             lock:unlock()
             return nil, "failed to receive RPC_PREPARE_CONF: " .. resp
         end
-
+        -- 收包类型错误，解锁报错
         if ty ~= constants.RPC_PREPARE_CONF then
             lock:unlock()
             return nil, "failed to receive RPC_PREPARE_CONF: unexpected type " .. ty
         end
 
+        -- 获取token
         local buf = flatbuffers.binaryArray.New(resp)
         local pcr = prepare_conf_resp.GetRootAsResp(buf, 0)
         token = pcr:ConfToken()
 
         core.log.notice("get conf token: ", token, " conf: ", core.json.delay_encode(conf.conf))
+        -- 存储token
         store_token(unique_key, token)
 
         lock:unlock()
 
         return token
     end,
+    -- req请求 handler
     function (conf, ctx, sock, entry)
+        -- lrucache_id是组装的 跟插件名称有关
         local lrucache_id = core.lrucache.plugin_ctx_id(ctx, entry)
+        -- 无语了这垃圾写法
+        -- 会先调用上面那个函数
+        -- 因为这里lrucache调用create 方法，参数传递了RPC_PREPARE_CONF, 对于上面的那个函数
         local token, err = core.lrucache.plugin_ctx(lrucache, ctx, entry, rpc_call,
                                                     constants.RPC_PREPARE_CONF, conf, ctx,
                                                     lrucache_id)
@@ -448,6 +474,7 @@ local rpc_handlers = {
         end
 
         builder:Clear()
+        -- ctx = api_ctx
         local var = ctx.var
 
         local uri
@@ -466,12 +493,14 @@ local rpc_handlers = {
             end
         end
 
+        -- 序列化数据
         local path = builder:CreateString(uri)
 
         local bin_addr = var.binary_remote_addr
         local src_ip = builder:CreateByteVector(bin_addr)
 
         local args = core.request.get_uri_args(ctx)
+        -- 添加参数序列化
         local textEntries = {}
         for key, val in pairs(args) do
             local ty = type(val)
@@ -483,6 +512,7 @@ local rpc_handlers = {
                 core.table.insert(textEntries, build_args(builder, key, val))
             end
         end
+        -- 写入args
         local len = #textEntries
         http_req_call_req.StartArgsVector(builder, len)
         for i = len, 1, -1 do
@@ -490,6 +520,7 @@ local rpc_handlers = {
         end
         local args_vec = builder:EndVector(len)
 
+        -- 请求头部
         local hdrs = core.request.headers(ctx)
         core.table.clear(textEntries)
         for key, val in pairs(hdrs) do
@@ -502,6 +533,7 @@ local rpc_handlers = {
                 core.table.insert(textEntries, build_headers(var, builder, key, val))
             end
         end
+        -- 写入header
         local len = #textEntries
         http_req_call_req.StartHeadersVector(builder, len)
         for i = len, 1, -1 do
@@ -509,6 +541,7 @@ local rpc_handlers = {
         end
         local hdrs_vec = builder:EndVector(len)
 
+        -- 写入req 参数
         local id = generate_id()
         local method = var.method
 
@@ -521,48 +554,61 @@ local rpc_handlers = {
         http_req_call_req.AddHeaders(builder, hdrs_vec)
         http_req_call_req.AddMethod(builder, encode_a6_method(method))
 
+        -- 前面就是各种编码
         local req = http_req_call_req.End(builder)
         builder:Finish(req)
 
+        -- 先发header
         local ok, err = send(sock, constants.RPC_HTTP_REQ_CALL, builder:Output())
         if not ok then
             return nil, "failed to send RPC_HTTP_REQ_CALL: " .. err
         end
 
         local ty, resp
+        -- apisix并不是一次性将所有数据发给对端
+        -- 仅发送args以及header
+        -- var和body仅在有需要时获取
+        -- 所以可能多次进入循环
         while true do
             ty, resp = receive(sock)
             if ty == nil then
                 return nil, "failed to receive RPC_HTTP_REQ_CALL: " .. resp
             end
 
+            -- 如果不是要获取var或者body的就直接退出循环
             if ty ~= constants.RPC_EXTRA_INFO then
                 break
             end
 
+            -- 获取要请求的var或者body
             local out, err = handle_extra_info(ctx, resp)
             if not out then
                 return nil, "failed to handle RPC_EXTRA_INFO: " .. err
             end
 
+            -- 发包
             local ok, err = send(sock, constants.RPC_EXTRA_INFO, out)
             if not ok then
                 return nil, "failed to reply RPC_EXTRA_INFO: " .. err
             end
         end
 
+        -- 不是正常结束回包的话
         if ty ~= constants.RPC_HTTP_REQ_CALL then
             return nil, "failed to receive RPC_HTTP_REQ_CALL: unexpected type " .. ty
         end
 
+        -- 解析结束回包
         local buf = flatbuffers.binaryArray.New(resp)
         local call_resp = http_req_call_resp.GetRootAsResp(buf, 0)
         local action_type = call_resp:ActionType()
+        -- stop类型
         if action_type == http_req_call_action.Stop then
             local action = call_resp:Action()
             local stop = http_req_call_stop.New()
             stop:Init(action.bytes, action.pos)
 
+            -- 写入回包header
             local len = stop:HeadersLength()
             if len > 0 then
                 for i = 1, len do
@@ -570,13 +616,14 @@ local rpc_handlers = {
                     core.response.set_header(entry:Name(), entry:Value())
                 end
             end
-
+            -- 写入回包body
             local body
             local len = stop:BodyLength()
             if len > 0 then
                 -- TODO: support empty body
                 body = stop:BodyAsString()
             end
+            -- 写入回包状态码
             local code = stop:Status()
             -- avoid using 0 as the default http status code
             if code == 0 then
@@ -585,6 +632,7 @@ local rpc_handlers = {
             return true, nil, code, body
         end
 
+        -- 如果是重定向类型
         if action_type == http_req_call_action.Rewrite then
             ctx.request_rewritten = constants.REWRITTEN_BY_EXT_PLUGIN
 
@@ -592,12 +640,14 @@ local rpc_handlers = {
             local rewrite = http_req_call_rewrite.New()
             rewrite:Init(action.bytes, action.pos)
 
+            -- 设置重定向 upstream路径
             local path = rewrite:Path()
             if path then
                 path = core.utils.uri_safe_encode(path)
                 var.upstream_uri = path
             end
 
+            -- 写入req头部
             local len = rewrite:HeadersLength()
             if len > 0 then
                 for i = 1, len do
@@ -636,6 +686,7 @@ local rpc_handlers = {
                     end
                 end
 
+                -- 设置uri参数
                 core.request.set_uri_args(ctx, args)
 
                 if path then
@@ -652,19 +703,23 @@ local rpc_handlers = {
 rpc_call = function (ty, conf, ctx, ...)
     local path = helper.get_path()
 
+    -- tcp链接
     local sock = socket_tcp()
     sock:settimeouts(1000, 60000, 60000)
+    -- 建联 本地unix通信
     local ok, err = sock:connect(path)
     if not ok then
         return nil, "failed to connect to the unix socket " .. path .. ": " .. err
     end
 
+    -- rpc请求
     local res, err, code, body = rpc_handlers[ty + 1](conf, ctx, sock, ...)
     if not res then
         sock:close()
         return nil, err
     end
 
+    -- 放进连接池
     local ok, err = sock:setkeepalive(180 * 1000, 32)
     if not ok then
         core.log.info("failed to setkeepalive: ", err)
@@ -673,8 +728,9 @@ rpc_call = function (ty, conf, ctx, ...)
     return res, nil, code, body
 end
 
-
+-- 重启事件
 local function recreate_lrucache()
+    -- 刷共享内存
     flush_token()
 
     if lrucache then
@@ -684,12 +740,13 @@ local function recreate_lrucache()
     lrucache = new_lrucache()
 end
 
-
+-- 调用远程进程
 function _M.communicate(conf, ctx, plugin_name)
     local ok, err, code, body
     local tries = 0
     while tries < 3 do
         tries = tries + 1
+        -- 远程调用
         ok, err, code, body = rpc_call(constants.RPC_HTTP_REQ_CALL, conf, ctx, plugin_name)
         if ok then
             if code then
@@ -698,20 +755,24 @@ function _M.communicate(conf, ctx, plugin_name)
 
             return
         end
-
+        -- 到这里是异常了
         if not core.string.find(err, "conf token not found") then
             core.log.error(err)
+            -- 如果允许降级，在这里不退出，继续走apisix原来的路径
             if conf.allow_degradation then
                 core.log.warn("Plugin Runner is wrong, allow degradation")
                 return
             end
+            -- 不允许降级则runner远程调用失败视为当前请求失败
             return 503
         end
 
         core.log.warn("refresh cache and try again")
+        -- 重建缓存 TODO 为啥叻
         recreate_lrucache()
     end
 
+    -- 重试次数使用完毕
     core.log.error(err)
     if conf.allow_degradation then
         core.log.warn("Plugin Runner is wrong after " .. tries .. " times retry, allow degradation")
@@ -722,6 +783,7 @@ end
 
 
 local function must_set(env, value)
+    -- 设置环境变量
     local ok, err = core.os.setenv(env, value)
     if not ok then
         error(str_format("failed to set %s: %s", env, err), 2)
@@ -736,6 +798,8 @@ local function spawn_proc(cmd)
     local opt = {
         merge_stderr = true,
     }
+    -- 执行系统指令
+    -- 启动runner
     local proc, err = ngx_pipe.spawn(cmd, opt)
     if not proc then
         error(str_format("failed to start %s: %s", core.json.encode(cmd), err))
@@ -748,6 +812,7 @@ end
 
 
 local runner
+-- 启动runner
 local function setup_runner(cmd)
     runner = spawn_proc(cmd)
 
@@ -756,10 +821,11 @@ local function setup_runner(cmd)
             return
         end
 
+        -- worker进程没退出的话
         while not exiting() do
             while true do
                 -- drain output
-                local max = 3800 -- smaller than Nginx error log length limit
+                local max = 3800 -- smaller than Nginx error log length limitations
                 local data, err = runner:stdout_read_any(max)
                 if not data then
                     if exiting() then
@@ -775,22 +841,25 @@ local function setup_runner(cmd)
                     core.log.warn(data)
                 end
             end
-
+            -- 等待runner返回
             local ok, reason, status = runner:wait()
             if not ok then
                 core.log.warn("runner exited with reason: ", reason, ", status: ", status)
             end
 
             runner = nil
-
+            -- 传播进程退出消息
+            -- 传播runner退出信号
             local ok, err = events.post(events_list._source, events_list.runner_exit)
             if not ok then
                 core.log.error("post event failure with ", events_list._source, ", error: ", err)
             end
 
             core.log.warn("respawn runner 3 seconds later with cmd: ", core.json.encode(cmd))
+            -- 等一下，让其他进程广播一下
             core.utils.sleep(3)
             core.log.warn("respawning new runner...")
+            -- 重启runner
             runner = spawn_proc(cmd)
         end
     end)
@@ -799,20 +868,24 @@ end
 
 function _M.init_worker()
     local local_conf = core.config.local_conf()
+    -- 服务进程指令
     local cmd = core.table.try_read_attr(local_conf, "ext-plugin", "cmd")
     if not cmd then
         return
     end
 
+    -- worker  用于同步worker进程数据
     events_list = events.event_list(
         "process_runner_exit_event",
         "runner_exit"
     )
 
-    -- flush cache when runner exited
+    -- 注册重启事件
+    -- process_runner_exit_event
     events.register(recreate_lrucache, events_list._source, events_list.runner_exit)
 
     -- note that the runner is run under the same user as the Nginx master
+    -- 守护进程维护runner
     if process.type() == "privileged agent" then
         setup_runner(cmd)
     end
